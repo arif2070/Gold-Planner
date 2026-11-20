@@ -4,7 +4,7 @@ import yfinance as yf
 from datetime import datetime
 
 st.set_page_config(
-    page_title="XAU/USD A+ Strict Confirmation Planner",
+    page_title="XAU/USD Technical & Fundamental Planner",
     page_icon="🥇",
     layout="wide"
 )
@@ -25,7 +25,7 @@ if "journal" not in st.session_state:
             "TP3 (1:3)",
             "Lot Size",
             "Risk ($)",
-            "Reason / Notes"
+            "Fundamental / Notes"
         ]
     )
 
@@ -208,11 +208,48 @@ def fetch_mtf_data(
     return rows, raw_frames
 
 
-st.title("🥇 XAU/USD A+ Setup Score & Strict Confirmation Planner")
-st.caption("100-Point A+ Confirmation Score + Minimum SL/TP Distance Guard — sirf high-probability setups par trade.")
+@st.cache_data(ttl=180)
+def fetch_fundamental_macro():
+    """Fetch DXY (DX-Y.NYB) and US 10Y Treasury Yield (^TNX) bias for Gold fundamental context."""
+    macro = {}
+    symbols = {
+        "DXY": "DX-Y.NYB",
+        "US10Y": "^TNX"
+    }
+    for key, sym in symbols.items():
+        df = yf.download(sym, period="1mo", interval="1d", progress=False, auto_adjust=False)
+        if df is not None and not df.empty and len(df) >= 10:
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = [c[0] for c in df.columns]
+            close_s = df["Close"].dropna()
+            last_val = float(close_s.iloc[-1])
+            ema10 = float(close_s.ewm(span=10, adjust=False).mean().iloc[-1])
+            prev_val = float(close_s.iloc[-2])
+            chg_pct = ((last_val - prev_val) / prev_val * 100.0) if prev_val else 0.0
+
+            if last_val > ema10 and chg_pct >= 0:
+                bias = "BULLISH"
+            elif last_val < ema10 and chg_pct <= 0:
+                bias = "BEARISH"
+            else:
+                bias = "NEUTRAL"
+
+            macro[key] = {
+                "value": round(last_val, 2),
+                "ema10": round(ema10, 2),
+                "chg_pct": round(chg_pct, 2),
+                "bias": bias
+            }
+        else:
+            macro[key] = None
+    return macro
+
+
+st.title("🥇 XAU/USD Technical + Fundamental A+ Planner")
+st.caption("1D, 4H, 1H, 15m (EMA + VWAP + Liquidity) + Live DXY / US10Y / News Filter + SL/TP Distance Guard.")
 
 # ==========================================
-# SIDEBAR: CAPITAL, EMA, VWAP & SL/TP FILTERS
+# SIDEBAR
 # ==========================================
 with st.sidebar:
     st.header("💼 Manual Capital & Risk")
@@ -243,12 +280,25 @@ with st.sidebar:
         st.success("🏆 5%–7% Daily Target achieve ho chuka hai!")
 
     st.divider()
+    st.subheader("🌍 Fundamental & News Rules")
+    news_status = st.selectbox(
+        "High-Impact USD News Status",
+        [
+            "Safe — Koi bari USD news qareeb nahi",
+            "Caution — News 30 mins mein aane wali hai",
+            "Active Spike — News abhi aayi hai"
+        ]
+    )
+    block_on_news = st.checkbox("News aane se 30 min pehle trade block karein", value=True)
+    require_fund_align = st.checkbox("Fundamental (DXY/Yields) confirmation zaroori karein", value=False)
+
+    st.divider()
     st.subheader("🛡️ SL / TP & A+ Score Filters")
-    min_sl_usd = st.number_input("Minimum SL Distance ($)", min_value=0.5, max_value=50.0, value=2.0, step=0.5, help="Is se chota SL spread/noise mein hit ho sakta hai")
-    max_sl_usd = st.number_input("Maximum SL Distance ($)", min_value=2.0, max_value=100.0, value=15.0, step=1.0, help="Is se bara SL wide/risky mana jayega")
+    min_sl_usd = st.number_input("Minimum SL Distance ($)", min_value=0.5, max_value=50.0, value=2.0, step=0.5)
+    max_sl_usd = st.number_input("Maximum SL Distance ($)", min_value=2.0, max_value=100.0, value=15.0, step=1.0)
     min_tp_usd = st.number_input("Minimum TP Distance ($)", min_value=1.0, max_value=150.0, value=4.0, step=0.5)
     min_rr_required = st.slider("Minimum Required R:R", min_value=1.5, max_value=4.0, value=2.0, step=0.5)
-    min_aplus_score = st.slider("Minimum Score for Trade Approval", min_value=70, max_value=100, value=85, step=5)
+    min_aplus_score = st.slider("Minimum Score for Approval", min_value=70, max_value=100, value=85, step=5)
 
     st.divider()
     st.subheader("⚙️ Custom EMA & VWAP Rules")
@@ -268,12 +318,13 @@ with st.sidebar:
     require_all_htf = st.checkbox("1D aur 4H Donon Same Side Zaroori", value=True)
     contract_size = st.number_input("Contract Size (oz / Lot)", min_value=1, value=100, step=10)
 
-    if st.button("🔄 Refresh Market Data"):
+    if st.button("🔄 Refresh Technical & Fundamental"):
         fetch_mtf_data.clear()
+        fetch_fundamental_macro.clear()
         st.rerun()
 
 # ==========================================
-# FETCH & DISPLAY MULTI-TIMEFRAME DATA
+# TECHNICAL & FUNDAMENTAL DATA
 # ==========================================
 mtf_rows, frames = fetch_mtf_data(
     ticker_sym,
@@ -287,11 +338,38 @@ mtf_rows, frames = fetch_mtf_data(
     int(liq_lookback)
 )
 
-st.subheader("📊 1D, 4H, 1H & 15m Analysis (EMA + VWAP + Liquidity)")
+macro_data = fetch_fundamental_macro()
+
+st.subheader("📊 Technical Analysis: 1D, 4H, 1H & 15m (EMA + VWAP + Liquidity)")
 st.dataframe(pd.DataFrame(mtf_rows), use_container_width=True, hide_index=True)
 
+st.subheader("🌍 Fundamental Analysis: Dollar Index (DXY) & US 10Y Yields")
+f1, f2, f3 = st.columns(3)
+
+dxy_info = macro_data.get("DXY")
+us10y_info = macro_data.get("US10Y")
+
+if dxy_info:
+    gold_dxy_implication = "Gold SELL ko support" if dxy_info["bias"] == "BULLISH" else ("Gold BUY ko support" if dxy_info["bias"] == "BEARISH" else "Neutral impact")
+    f1.metric("DXY (Dollar Index)", f"{dxy_info['value']}", f"{dxy_info['chg_pct']}% | {dxy_info['bias']}")
+    f1.caption(f"EMA10: {dxy_info['ema10']} -> {gold_dxy_implication}")
+else:
+    f1.metric("DXY (Dollar Index)", "N/A")
+    f1.caption("DXY feed abhi available nahi.")
+
+if us10y_info:
+    gold_y_implication = "Gold SELL ko support" if us10y_info["bias"] == "BULLISH" else ("Gold BUY ko support" if us10y_info["bias"] == "BEARISH" else "Neutral impact")
+    f2.metric("US 10Y Yield (^TNX)", f"{us10y_info['value']}%", f"{us10y_info['chg_pct']}% | {us10y_info['bias']}")
+    f2.caption(f"EMA10: {us10y_info['ema10']}% -> {gold_y_implication}")
+else:
+    f2.metric("US 10Y Yield (^TNX)", "N/A")
+    f2.caption("Yields feed abhi available nahi.")
+
+f3.metric("USD News Filter", news_status.split(" — ")[0])
+f3.caption("CPI / NFP / FOMC ke waqt spikes se bachein.")
+
 # ==========================================
-# POSITION & SL/TP INPUTS (USED FOR FILTERING & SCORING)
+# ENTRY, SL/TP & POSITION SIZING
 # ==========================================
 st.divider()
 st.subheader(f"📐 Entry, SL/TP & Position Sizing (Capital: ${capital:.2f} | Risk: {risk_pct}%)")
@@ -346,42 +424,47 @@ with p3:
     st.metric("TP3 (1:3.0)", f"${tp3:.2f}", f"+${risk_usd*3.0:.2f}")
 
 # ==========================================
-# A+ SETUP CONFIRMATION SCORING & SL/TP VALIDATION
+# COMBINED TECHNICAL + FUNDAMENTAL A+ SCORING
 # ==========================================
 score = 0
 pass_reasons = []
 fail_reasons = []
-
 is_buy = trade_side == "BUY"
 
 if dd_locked:
     fail_reasons.append(f"3% Daily Drawdown (-${max_dd_usd:.2f}) hit ho chuka hai.")
 
+news_blocked = block_on_news and ("30 mins" in news_status)
+if news_blocked:
+    fail_reasons.append("High-impact USD news 30 minute ke andar aane wali hai — trade blocked.")
+
+# 1. HTF Alignment (25 pts)
 htf_aligned = (
     ((d1_buy and h4_buy) if require_all_htf else (d1_buy or h4_buy))
     if is_buy
     else ((d1_sell and h4_sell) if require_all_htf else (d1_sell or h4_sell))
 )
 if htf_aligned:
-    score += 30
-    pass_reasons.append(f"[+30 pts] Higher Timeframe (1D/4H) {trade_side} side ke saath fully aligned hai.")
+    score += 25
+    pass_reasons.append(f"[+25 pts] Technical HTF (1D/4H) {trade_side} side ke saath aligned hai.")
 else:
-    fail_reasons.append(f"[0/30 pts] 1D/4H par {trade_side} side ki strict EMA + VWAP alignment poori nahi hai.")
+    fail_reasons.append(f"[0/25 pts] Technical HTF (1D/4H) par {trade_side} alignment poori nahi hai.")
 
-h1_aligned = h1_buy if is_buy else h1_sell
-if h1_aligned:
-    score += 20
-    pass_reasons.append(f"[+20 pts] 1H timeframe {trade_side} side confirm kar raha hai.")
+# 2. 1H + 15m Alignment (30 pts: 15 each)
+if (h1_buy if is_buy else h1_sell):
+    score += 15
+    pass_reasons.append(f"[+15 pts] 1H timeframe {trade_side} side confirm kar raha hai.")
 else:
-    fail_reasons.append(f"[0/20 pts] 1H timeframe par {trade_side} confirmation missing hai.")
+    fail_reasons.append(f"[0/15 pts] 1H timeframe par {trade_side} confirmation missing hai.")
 
 m15_aligned = m15_buy if is_buy else m15_sell
 if m15_aligned:
-    score += 20
-    pass_reasons.append(f"[+20 pts] 15m execution chart {trade_side} side par aligned hai.")
+    score += 15
+    pass_reasons.append(f"[+15 pts] 15m execution chart {trade_side} side par aligned hai.")
 else:
-    fail_reasons.append(f"[0/20 pts] 15m execution chart abhi {trade_side} entry trigger nahi de raha.")
+    fail_reasons.append(f"[0/15 pts] 15m execution chart abhi {trade_side} trigger nahi de raha.")
 
+# 3. Liquidity Sweep (15 pts)
 liq_aligned = (
     any("SSL_SWEEP" in liqs.get(tf, "") for tf in ["1H", "15m"])
     if is_buy
@@ -389,16 +472,30 @@ liq_aligned = (
 )
 if liq_aligned:
     score += 15
-    pass_reasons.append(f"[+15 pts] {'SSL' if is_buy else 'BSL'} Liquidity Sweep confirm ho chuka hai.")
+    pass_reasons.append(f"[+15 pts] {'SSL' if is_buy else 'BSL'} Liquidity Sweep confirm hua hai.")
 else:
-    if require_liq:
-        fail_reasons.append(f"[0/15 pts] Compulsory {'SSL' if is_buy else 'BSL'} Liquidity Sweep abhi nahi hua.")
-    else:
-        fail_reasons.append(f"[0/15 pts] Fresh {'SSL' if is_buy else 'BSL'} sweep detect nahi hua.")
+    fail_reasons.append(f"[0/15 pts] {'SSL' if is_buy else 'BSL'} Liquidity Sweep abhi detect nahi hua.")
 
+# 4. Fundamental DXY & US10Y Alignment (15 pts)
+fund_bull_gold = (
+    (dxy_info and dxy_info["bias"] == "BEARISH")
+    or (us10y_info and us10y_info["bias"] == "BEARISH")
+)
+fund_bear_gold = (
+    (dxy_info and dxy_info["bias"] == "BULLISH")
+    or (us10y_info and us10y_info["bias"] == "BULLISH")
+)
+fund_aligned = fund_bull_gold if is_buy else fund_bear_gold
+
+if fund_aligned:
+    score += 15
+    pass_reasons.append(f"[+15 pts] Fundamental macro (DXY / US10Y) {trade_side} Gold ko support kar raha hai.")
+else:
+    fail_reasons.append(f"[0/15 pts] Fundamental macro (DXY / US10Y) abhi {trade_side} Gold ko clear support nahi de raha.")
+
+# 5. SL/TP Distance & R:R Filter (15 pts)
 sl_side_valid = (sl_price < entry_price) if is_buy else (sl_price > entry_price)
 tp_side_valid = (custom_tp > entry_price) if is_buy else (custom_tp < entry_price)
-
 sl_tp_ok = (
     sl_side_valid
     and tp_side_valid
@@ -409,55 +506,44 @@ sl_tp_ok = (
 
 if sl_tp_ok:
     score += 15
-    pass_reasons.append(
-        f"[+15 pts] SL (${sl_dist:.2f}), TP (${tp_dist:.2f}) aur R:R (1:{actual_rr:.2f}) tamam distance filters pass karte hain."
-    )
+    pass_reasons.append(f"[+15 pts] SL (${sl_dist:.2f}), TP (${tp_dist:.2f}) aur R:R (1:{actual_rr:.2f}) rules pass hain.")
 else:
-    if not sl_side_valid:
-        fail_reasons.append(f"[0/15 pts] Invalid SL placement: {trade_side} mein SL galat side par hai.")
-    if not tp_side_valid:
-        fail_reasons.append(f"[0/15 pts] Invalid TP placement: {trade_side} mein TP galat side par hai.")
-    if sl_dist < min_sl_usd:
-        fail_reasons.append(f"[0/15 pts] SL distance (${sl_dist:.2f}) minimum limit (${min_sl_usd:.2f}) se kam hai — noise/spread hit ka khatra.")
-    elif sl_dist > max_sl_usd:
-        fail_reasons.append(f"[0/15 pts] SL distance (${sl_dist:.2f}) maximum limit (${max_sl_usd:.2f}) se zyada hai.")
-    if tp_dist < min_tp_usd:
-        fail_reasons.append(f"[0/15 pts] TP distance (${tp_dist:.2f}) minimum TP target (${min_tp_usd:.2f}) se chota hai.")
-    if actual_rr < min_rr_required:
-        fail_reasons.append(f"[0/15 pts] Planned R:R (1:{actual_rr:.2f}) minimum required R:R (1:{min_rr_required:.1f}) se kam hai.")
+    fail_reasons.append(f"[0/15 pts] SL/TP distance ya R:R filter fail hua (SL: ${sl_dist:.2f}, TP: ${tp_dist:.2f}, R:R: 1:{actual_rr:.2f}).")
 
 if score >= 90:
     setup_grade = "A+ SETUP"
 elif score >= 75:
     setup_grade = "A SETUP"
 elif score >= 60:
-    setup_grade = "B SETUP (Weak)"
+    setup_grade = "B SETUP"
 else:
     setup_grade = "C / NO-TRADE"
 
 hard_block = (
     dd_locked
+    or news_blocked
     or not sl_tp_ok
     or not htf_aligned
     or not m15_aligned
     or (require_liq and not liq_aligned)
+    or (require_fund_align and not fund_aligned)
     or score < min_aplus_score
 )
 
 final_signal = f"{trade_side} SIDE" if not hard_block else "NO TRADE"
 
 st.divider()
-st.subheader("🏆 A+ Setup Confirmation Score & Final Decision")
+st.subheader("🏆 Technical + Fundamental A+ Score & Decision")
 
 m1, m2, m3 = st.columns(3)
-m1.metric("Confirmation Score", f"{score} / 100", f"Min Required: {min_aplus_score}")
+m1.metric("Combined Score", f"{score} / 100", f"Min Required: {min_aplus_score}")
 m2.metric("Setup Grade", setup_grade)
-m3.metric("Engine Verdict", final_signal)
+m3.metric("Final Verdict", final_signal)
 
 if final_signal != "NO TRADE":
     st.success(f"### ✅ {setup_grade} ({score}/100): {final_signal} TRADE APPROVED")
 else:
-    st.error(f"### ⛔ {setup_grade} ({score}/100): STRICT NO TRADE — FILTER BLOCKED")
+    st.error(f"### ⛔ {setup_grade} ({score}/100): STRICT NO TRADE")
 
 c_pass, c_fail = st.columns(2)
 with c_pass:
@@ -469,19 +555,21 @@ with c_pass:
         st.info("Abhi koi confirmation pass nahi hui.")
 
 with c_fail:
-    st.markdown("#### ❌ Blocked / Missing Conditions:")
+    st.markdown("#### ❌ Missing / Blocking Factors:")
     if fail_reasons:
         for r in fail_reasons:
             st.markdown(f"- {r}")
     else:
-        st.success("Tamam rules aur distance filters pass ho gaye hain!")
+        st.success("Koi rukawat nahi hai.")
 
 # ==========================================
 # TRADE JOURNAL & CSV EXPORT
 # ==========================================
 st.divider()
 st.subheader("📒 Trade Journal & CSV Export")
-notes_val = st.text_input("Notes", value=f"{setup_grade} ({score}/100) | Verdict: {final_signal}")
+dxy_txt = f"DXY:{dxy_info['bias']}({dxy_info['value']})" if dxy_info else "DXY:N/A"
+y10_txt = f"10Y:{us10y_info['bias']}({us10y_info['value']}%)" if us10y_info else "10Y:N/A"
+notes_val = st.text_input("Notes", value=f"{setup_grade} ({score}/100) | {dxy_txt} | {y10_txt} | {news_status}")
 
 if st.button("➕ Save Setup to Journal", type="primary"):
     new_row = pd.DataFrame([{
@@ -498,16 +586,16 @@ if st.button("➕ Save Setup to Journal", type="primary"):
         "TP3 (1:3)": round(tp3, 2),
         "Lot Size": lot_size,
         "Risk ($)": round(risk_usd, 2),
-        "Reason / Notes": notes_val
+        "Fundamental / Notes": notes_val
     }])
     st.session_state.journal = pd.concat([st.session_state.journal, new_row], ignore_index=True)
-    st.success("Setup journal mein save ho gaya!")
+    st.success("Journal mein save ho gaya!")
 
 if not st.session_state.journal.empty:
     st.dataframe(st.session_state.journal, use_container_width=True, hide_index=True)
     st.download_button(
         "⬇️ Download Journal CSV",
         data=st.session_state.journal.to_csv(index=False).encode("utf-8"),
-        file_name=f"xauusd_aplus_journal_{datetime.now().strftime('%Y%m%d')}.csv",
+        file_name=f"xauusd_tech_fund_journal_{datetime.now().strftime('%Y%m%d')}.csv",
         mime="text/csv"
     )
